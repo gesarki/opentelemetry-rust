@@ -8,22 +8,43 @@ use opentelemetry::{
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_http::{Bytes, HeaderInjector};
 use opentelemetry_sdk::{
-    logs::SdkLoggerProvider, propagation::TraceContextPropagator, trace::SdkTracerProvider,
+    logs::SdkLoggerProvider, propagation::TraceContextPropagator, trace::SdkTracerProvider, Resource
 };
-use opentelemetry_stdout::{LogExporter, SpanExporter};
+use opentelemetry_stdout::{LogExporter};
+use opentelemetry_otlp::{MetricExporter, SpanExporter};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::sync::OnceLock;
+
+fn get_resource() -> Resource {
+    static RESOURCE: OnceLock<Resource> = OnceLock::new();
+    RESOURCE
+        .get_or_init(|| {
+            Resource::builder()
+                .with_service_name("basic-otlp-example-grpc")
+                .build()
+        })
+        .clone()
+}
 
 fn init_tracer() -> SdkTracerProvider {
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .expect("Failed to create span exporter");
     global::set_text_map_propagator(TraceContextPropagator::new());
-    // Install stdout exporter pipeline to be able to retrieve the collected spans.
-    // For the demonstration, use `Sampler::AlwaysOn` sampler to sample all traces.
-    let provider = SdkTracerProvider::builder()
-        .with_simple_exporter(SpanExporter::default())
-        .build();
+    SdkTracerProvider::builder()
+        .with_resource(get_resource())
+        .with_batch_exporter(exporter)
+        .build()
+    // // Install stdout exporter pipeline to be able to retrieve the collected spans.
+    // // For the demonstration, use `Sampler::AlwaysOn` sampler to sample all traces.
+    // let provider = SdkTracerProvider::builder()
+    //     .with_simple_exporter(SpanExporter::default())
+    //     .build();
 
-    global::set_tracer_provider(provider.clone());
-    provider
+    // global::set_tracer_provider(provider.clone());
+    // provider
 }
 
 fn init_logs() -> SdkLoggerProvider {
@@ -73,6 +94,7 @@ async fn send_request(
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let tracer_provider = init_tracer();
+    global::set_tracer_provider(tracer_provider.clone());
     let logger_provider = init_logs();
 
     send_request(

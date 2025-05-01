@@ -13,16 +13,30 @@ use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_http::{Bytes, HeaderExtractor};
 use opentelemetry_sdk::{
     error::OTelSdkResult,
+    Resource,
     logs::{LogProcessor, SdkLogRecord, SdkLoggerProvider},
     propagation::{BaggagePropagator, TraceContextPropagator},
     trace::{SdkTracerProvider, SpanProcessor},
 };
 use opentelemetry_semantic_conventions::trace;
-use opentelemetry_stdout::{LogExporter, SpanExporter};
+use opentelemetry_stdout::{LogExporter};
+use opentelemetry_otlp::{MetricExporter, SpanExporter};
+
 use std::{convert::Infallible, net::SocketAddr, sync::OnceLock};
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+fn get_resource() -> Resource {
+    static RESOURCE: OnceLock<Resource> = OnceLock::new();
+    RESOURCE
+        .get_or_init(|| {
+            Resource::builder()
+                .with_service_name("basic-otlp-example-grpc")
+                .build()
+        })
+        .clone()
+}
 
 fn get_tracer() -> &'static BoxedTracer {
     static TRACER: OnceLock<BoxedTracer> = OnceLock::new();
@@ -145,24 +159,38 @@ impl SpanProcessor for EnrichWithBaggageSpanProcessor {
 }
 
 fn init_tracer() -> SdkTracerProvider {
-    let baggage_propagator = BaggagePropagator::new();
+
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .expect("Failed to create span exporter");
+
     let trace_context_propagator = TraceContextPropagator::new();
-    let composite_propagator = TextMapCompositePropagator::new(vec![
-        Box::new(baggage_propagator),
-        Box::new(trace_context_propagator),
-    ]);
+    global::set_text_map_propagator(trace_context_propagator);
 
-    global::set_text_map_propagator(composite_propagator);
+    SdkTracerProvider::builder()
+        .with_resource(get_resource())
+        .with_batch_exporter(exporter)
+        .build()
 
-    // Setup tracerprovider with stdout exporter
-    // that prints the spans to stdout.
-    let provider = SdkTracerProvider::builder()
-        .with_span_processor(EnrichWithBaggageSpanProcessor)
-        .with_simple_exporter(SpanExporter::default())
-        .build();
+    // let baggage_propagator = BaggagePropagator::new();
+    // let trace_context_propagator = TraceContextPropagator::new();
+    // let composite_propagator = TextMapCompositePropagator::new(vec![
+    //     Box::new(baggage_propagator),
+    //     Box::new(trace_context_propagator),
+    // ]);
 
-    global::set_tracer_provider(provider.clone());
-    provider
+    // global::set_text_map_propagator(composite_propagator);
+
+    // // Setup tracerprovider with stdout exporter
+    // // that prints the spans to stdout.
+    // let provider = SdkTracerProvider::builder()
+    //     .with_span_processor(EnrichWithBaggageSpanProcessor)
+    //     .with_simple_exporter(SpanExporter::default())
+    //     .build();
+
+    // global::set_tracer_provider(provider.clone());
+    // provider
 }
 
 fn init_logs() -> SdkLoggerProvider {
@@ -183,6 +211,7 @@ async fn main() {
     use hyper_util::server::conn::auto::Builder;
 
     let provider = init_tracer();
+    global::set_tracer_provider(provider.clone());
     let logger_provider = init_logs();
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     let listener = TcpListener::bind(addr).await.unwrap();
