@@ -31,6 +31,5 @@ $ cargo run --bin http-client
 ```
 
 You should see the spans in jaeger at http://localhost:16686/ like so:
-![Jaeger-selected-spans](image.png)
-
 ![jaeger-all-spans](image-1.png)
+![Jaeger-selected-spans](image.png)
